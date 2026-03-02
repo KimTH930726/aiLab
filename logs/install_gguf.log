@@ -1,0 +1,5 @@
+Defaulting to user installation because normal site-packages is not writeable
+ERROR: Invalid requirement: '3rdparty/llama.cpp/gguf-py'
+Hint: It looks like a path. File '3rdparty/llama.cpp/gguf-py' does not exist.
+WARNING: You are using pip version 21.2.4; however, version 26.0.1 is available.
+You should consider upgrading via the '/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3 -m pip install --upgrade pip' command.

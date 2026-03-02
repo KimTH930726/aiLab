@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from .domain.state import Phase, AgentState
 from .infra.vectordb import LocalRAG
@@ -28,6 +28,7 @@ def run_agent(
     model_name: Optional[str] = None,
     db_path: str = "/tmp/lancedb_self_correction_agent",
     verbose: bool = True,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> str:
     """
     Self-Correction Agent 메인 진입점.
@@ -44,15 +45,15 @@ def run_agent(
     mode = "mock"
     pydantic_agent = None
     if model_name:
-        pydantic_agent = create_pydantic_agent(model_name)
+        pydantic_agent, use_tools = create_pydantic_agent(model_name)
         if pydantic_agent:
-            mode = "pydantic-ai"
+            mode = "pydantic-ai" if use_tools else "pydantic-ai-notool"
 
     if verbose:
         print(f"  Mode   : {mode}" + (f" ({model_name})" if model_name else ""))
 
     rag = LocalRAG(db_path)
-    n = rag.seed(KNOWLEDGE_BASE)
+    n = rag.initialize(KNOWLEDGE_BASE)  # v2: 이미 데이터 있으면 재생성 안 함
 
     if verbose:
         print(f"  LanceDB: {n} documents indexed")
@@ -60,6 +61,7 @@ def run_agent(
         print("=" * 60)
 
     state = AgentState(query=query)
+    state.on_event = on_event  # 웹 UI 콜백 주입
 
     # ═══════════════════════════════════════════════════
     #  MAIN LOOP — Phase 기반 상태 머신
@@ -67,17 +69,26 @@ def run_agent(
 
     while state.phase not in (Phase.DONE, Phase.FAILED):
 
+        attempt = state.retry_count + 1
+        max_attempts = state.max_retries + 1
+
         if verbose:
             print(f"\n{'─' * 50}")
-            attempt = state.retry_count + 1
-            max_attempts = state.max_retries + 1
             print(f"  Phase: {state.phase.value}  |  Attempt: {attempt}/{max_attempts}")
             print(f"{'─' * 50}")
+
+        if on_event:
+            on_event({
+                "type": "phase",
+                "phase": state.phase.value,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            })
 
         # ── PLANNING ──
         if state.phase == Phase.PLANNING:
             state.log("Analyzing query, planning search strategy...")
-            plan_search_queries(state, query)
+            plan_search_queries(state, query, model_name=model_name)  # v2: LLM 확장
             state.phase = Phase.SEARCHING
 
         # ── SEARCHING ──
@@ -108,7 +119,7 @@ def run_agent(
         # ── CRITIQUING ──
         elif state.phase == Phase.CRITIQUING:
             state.log("Critic evaluating draft quality...")
-            verdict = critic_evaluate(state.draft)
+            verdict = critic_evaluate(state.draft, eval_criteria=state.eval_criteria)
             state.critique = verdict
             state.log(f"Score: {verdict.score:.2f} | Passed: {verdict.passed}")
 
@@ -152,4 +163,15 @@ def run_agent(
             print(f"  {entry}")
         print()
 
-    return state.final_result or "Agent failed to produce a result."
+    final = state.final_result or "Agent failed to produce a result."
+
+    if on_event:
+        on_event({
+            "type": "result",
+            "status": state.phase.value,
+            "markdown": final,
+            "score": state.critique.score if state.critique else 0.0,
+            "retries": state.retry_count,
+        })
+
+    return final

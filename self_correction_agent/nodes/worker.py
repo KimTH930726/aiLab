@@ -25,10 +25,16 @@ def worker_generate_draft(
     mode="mock"       : 템플릿 기반 (BitNet 시뮬레이션, LLM 불필요)
     mode="pydantic-ai": Pydantic AI Agent가 LanceDB Tool로 자율 작성
     """
-    if mode == "pydantic-ai" and pydantic_agent is not None and rag is not None:
+    if pydantic_agent is not None:
         prompt = _build_worker_prompt(state)
-        result = pydantic_agent.run_sync(prompt, deps=rag)
-        return result.data
+        if mode == "pydantic-ai" and rag is not None:
+            # tools 지원 모델: Agent가 직접 LanceDB 검색 수행
+            result = pydantic_agent.run_sync(prompt, deps=rag)
+        else:
+            # tools 미지원 모델(BitNet 등): 검색 결과를 프롬프트에 임베드
+            result = pydantic_agent.run_sync(prompt)
+        # pydantic-ai 버전별 반환 속성 호환 (>=0.1.0: output, 구버전: data)
+        return result.output if hasattr(result, "output") else result.data
 
     return _mock_generate(state)
 
@@ -49,17 +55,22 @@ def _build_worker_prompt(state: AgentState) -> str:
             f"You MUST address these gaps in the new draft."
         )
 
+    user_query = state.query or "AI 최신 동향 리포트를 작성해주세요"
+
     return textwrap.dedent(f"""\
-        Write a comprehensive "OpenAI Latest Trends Report" using this knowledge:
+        사용자 요청: {user_query}
+
+        아래 지식베이스 내용을 활용하여 위 요청에 맞는 리포트를 작성하세요:
 
         {context}
         {feedback}
 
-        Requirements:
-        - Use ## headers for each major topic
-        - Cite sources with "Source: ..." format
-        - Cover ALL topics present in the search results
-        - Be comprehensive and factual
+        작성 규칙:
+        - 반드시 한국어(Korean)로 작성할 것
+        - 각 주요 토픽에 ## 헤더를 사용할 것
+        - 출처는 "출처: ..." 형식으로 표기할 것
+        - 검색 결과의 모든 토픽을 포함할 것
+        - 사실에 기반하여 상세하게 작성할 것
     """)
 
 
@@ -75,26 +86,27 @@ def _mock_generate(state: AgentState) -> str:
 
     parts: list[str] = []
 
-    parts.append("# OpenAI Latest Trends Report")
-    parts.append(f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n")
+    title = state.query or "AI 최신 동향 리포트"
+    parts.append(f"# {title}")
+    parts.append(f"_생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n")
 
-    parts.append("## Executive Summary")
+    parts.append("## 요약")
     parts.append(
-        f"This report covers {len(topics)} key areas of OpenAI's recent "
-        f"developments, synthesized from {len(state.search_results)} sources."
+        f"이 리포트는 {len(topics)}개 핵심 분야를 다루며, "
+        f"{len(state.search_results)}개 출처에서 종합하였습니다."
     )
 
     for topic, results in topics.items():
         parts.append(f"## {topic}")
         for r in results:
             parts.append(r["text"])
-            parts.append(f"_Source: {r['source']}_\n")
+            parts.append(f"_출처: {r['source']}_\n")
 
-    parts.append("## Conclusion")
+    parts.append("## 결론")
     parts.append(
-        "OpenAI continues advancing AI capabilities across multimodal models, "
-        "reasoning, safety research, and enterprise adoption while expanding "
-        "its developer platform and strategic partnerships."
+        "AI 분야는 멀티모달 모델, 추론 능력, 안전성 연구, 기업 도입 확산 등 "
+        "다방면에서 빠르게 발전하고 있으며, 개발자 플랫폼과 전략적 파트너십도 "
+        "지속적으로 확대되고 있습니다."
     )
 
     return "\n\n".join(parts)

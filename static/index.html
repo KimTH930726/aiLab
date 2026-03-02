@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Self-Correction Agent</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #212121;
+      --surface: #2f2f2f;
+      --surface2: #3a3a3a;
+      --accent: #10a37f;
+      --accent-dim: #0d8a6b;
+      --text: #ececec;
+      --muted: #8e8ea0;
+      --border: #3f3f3f;
+      --user-bg: #2f2f2f;
+      --agent-bg: #1e1e1e;
+      --phase-done: #10a37f;
+      --phase-active: #60a5fa;
+      --phase-pending: #4b5563;
+      --phase-failed: #ef4444;
+      --retry-bg: #3b1f1f;
+      --retry-border: #7f1d1d;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 210px;
+      min-width: 210px;
+      height: 100vh;
+      background: #1a1a1a;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    .sidebar-brand {
+      padding: 20px 16px 18px;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.01em;
+      border-bottom: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    .sidebar-brand span {
+      display: block;
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--muted);
+      margin-top: 3px;
+      letter-spacing: 0.03em;
+    }
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      padding: 10px 8px;
+      gap: 2px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 8px;
+      border: none;
+      background: none;
+      color: var(--muted);
+      font-size: 13.5px;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+      transition: background 0.12s, color 0.12s;
+      font-family: inherit;
+    }
+    .nav-item:hover { background: var(--surface); color: var(--text); }
+    .nav-item.active { background: var(--surface); color: var(--text); font-weight: 600; }
+    .nav-item svg { flex-shrink: 0; opacity: 0.7; }
+    .nav-item.active svg { opacity: 1; }
+
+    /* ── Main content area ── */
+    .main-content {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      min-width: 0;
+    }
+
+    /* ── Panels ── */
+    .panel { flex: 1; overflow: hidden; display: none; flex-direction: column; }
+    .panel.active { display: flex; }
+
+    /* ── Chat panel ── */
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    #chat-messages::-webkit-scrollbar { width: 6px; }
+    #chat-messages::-webkit-scrollbar-track { background: transparent; }
+    #chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .message-row {
+      padding: 12px 20%;
+      display: flex;
+      flex-direction: column;
+    }
+    @media (max-width: 900px) { .message-row { padding: 12px 5%; } }
+
+    .message-row.user { align-items: flex-end; }
+    .message-row.agent { align-items: flex-start; }
+
+    .bubble {
+      max-width: 80%;
+      padding: 14px 18px;
+      border-radius: 12px;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .message-row.user .bubble {
+      background: var(--surface);
+      border-radius: 12px 12px 2px 12px;
+    }
+    .message-row.agent .bubble {
+      background: var(--agent-bg);
+      border: 1px solid var(--border);
+      border-radius: 2px 12px 12px 12px;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    /* ── Phase tracker ── */
+    .phase-tracker { margin-bottom: 12px; }
+    .phase-tracker-title {
+      font-size: 11px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.08em; margin-bottom: 10px;
+    }
+    .phase-list { display: flex; flex-direction: column; gap: 6px; }
+    .phase-item {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 13px; color: var(--muted);
+      transition: color 0.2s;
+    }
+    .phase-item.done { color: var(--phase-done); }
+    .phase-item.active { color: var(--phase-active); }
+    .phase-item.failed { color: var(--phase-failed); }
+
+    .phase-icon {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; flex-shrink: 0;
+      border: 1.5px solid var(--phase-pending);
+      color: var(--phase-pending);
+    }
+    .phase-item.done .phase-icon {
+      background: var(--phase-done); border-color: var(--phase-done); color: #fff;
+    }
+    .phase-item.active .phase-icon {
+      border-color: var(--phase-active); color: var(--phase-active);
+    }
+    .phase-item.failed .phase-icon {
+      background: var(--phase-failed); border-color: var(--phase-failed); color: #fff;
+    }
+
+    /* spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid var(--phase-active);
+      border-top-color: transparent;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    /* retry badge */
+    .retry-badge {
+      display: inline-block;
+      background: var(--retry-bg); border: 1px solid var(--retry-border);
+      color: #fca5a5; font-size: 11px; padding: 2px 8px; border-radius: 4px;
+      margin-left: 8px;
+    }
+
+    /* ── Activity log ── */
+    .log-toggle {
+      font-size: 12px; color: var(--muted); cursor: pointer;
+      user-select: none; margin: 10px 0 6px;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .log-toggle:hover { color: var(--text); }
+    .log-toggle .arrow { transition: transform 0.2s; display: inline-block; }
+    .log-toggle.open .arrow { transform: rotate(90deg); }
+
+    .log-lines {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11.5px; color: var(--muted);
+      display: none; flex-direction: column; gap: 2px;
+      max-height: 180px; overflow-y: auto;
+      background: var(--surface2); border-radius: 6px; padding: 8px 10px;
+    }
+    .log-lines.open { display: flex; }
+    .log-line { white-space: pre-wrap; word-break: break-all; }
+    .log-line .log-icon { color: var(--accent); }
+
+    /* ── Final result (markdown) ── */
+    .result-area {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .result-area h1, .result-area h2, .result-area h3 {
+      color: var(--text); margin: 1em 0 0.4em; font-weight: 600;
+    }
+    .result-area h1 { font-size: 18px; }
+    .result-area h2 { font-size: 15px; }
+    .result-area h3 { font-size: 13px; }
+    .result-area p { margin: 0.5em 0; font-size: 13.5px; line-height: 1.7; color: #d1d5db; }
+    .result-area em { color: var(--muted); font-style: italic; font-size: 12px; }
+    .result-area table {
+      border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 13px;
+    }
+    .result-area th, .result-area td {
+      border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+    }
+    .result-area th { background: var(--surface2); }
+    .result-area code {
+      background: var(--surface2); padding: 1px 5px; border-radius: 3px;
+      font-size: 12px; font-family: monospace;
+    }
+
+    /* score badge */
+    .score-row {
+      display: flex; gap: 8px; align-items: center;
+      font-size: 12px; color: var(--muted); margin-top: 10px;
+    }
+    .score-badge {
+      padding: 2px 8px; border-radius: 4px; font-weight: 600;
+      background: var(--accent); color: #fff;
+    }
+    .score-badge.failed { background: var(--phase-failed); }
+
+    /* ── Input area ── */
+    .input-area {
+      padding: 16px 20%;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      flex-shrink: 0;
+    }
+    @media (max-width: 900px) { .input-area { padding: 12px 5%; } }
+
+    .input-row {
+      display: flex; gap: 8px; align-items: flex-end;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 10px 14px;
+    }
+    .input-row:focus-within { border-color: var(--accent); }
+
+    #query-input {
+      flex: 1; background: none; border: none; outline: none;
+      color: var(--text); font-size: 14px; resize: none;
+      min-height: 24px; max-height: 160px; line-height: 1.5;
+      font-family: inherit;
+    }
+    #query-input::placeholder { color: var(--muted); }
+
+    #send-btn {
+      background: var(--accent); border: none; color: #fff;
+      width: 32px; height: 32px; border-radius: 7px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; font-size: 15px; transition: background 0.15s;
+    }
+    #send-btn:hover { background: var(--accent-dim); }
+    #send-btn:disabled { background: var(--border); cursor: not-allowed; }
+
+    .model-row {
+      margin-top: 8px; display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--muted);
+    }
+    #model-input {
+      background: none; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); padding: 3px 8px; font-size: 12px; outline: none;
+      width: 200px;
+    }
+    #model-input:focus { border-color: var(--accent); }
+    #model-input::placeholder { color: var(--muted); }
+
+    /* ── DB panel ── */
+    #db-panel { padding: 0; overflow: hidden; flex-direction: column; }
+
+    /* 서브탭 헤더 */
+    .db-sub-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px 0; flex-shrink: 0; gap: 12px;
+    }
+    .db-sub-header h2 { font-size: 15px; margin: 0; white-space: nowrap; }
+    .db-sub-tabs { display: flex; gap: 4px; }
+    .db-sub-tab {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      padding: 5px 16px; border-radius: 6px; cursor: pointer; font-size: 13px;
+      transition: all 0.15s;
+    }
+    .db-sub-tab.active { background: var(--surface); color: var(--text); border-color: var(--surface2); }
+    .db-sub-tab:hover:not(.active) { color: var(--text); }
+
+    /* 서브패널 공통 */
+    .db-sub-panel {
+      flex: 1; overflow-y: auto; padding: 16px 20px 20px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .db-sub-panel::-webkit-scrollbar { width: 6px; }
+    .db-sub-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* 목록 서브패널 */
+    .db-toolbar { display: flex; gap: 8px; align-items: center; }
+    .db-search {
+      flex: 1; padding: 7px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); font-size: 13px;
+    }
+    .db-search:focus { outline: none; border-color: var(--accent); }
+
+    /* 추가/관리 서브패널 */
+    .manage-section {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 18px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .manage-section h3 { font-size: 13px; font-weight: 600; margin: 0; color: var(--text); }
+    .manage-desc { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5; }
+    .manage-section.manage-danger { border-color: #7f1d1d; }
+    .manage-section.manage-danger h3 { color: #fca5a5; }
+
+    /* 공통 버튼 */
+    .db-btn {
+      padding: 7px 14px; border-radius: 8px; border: none; cursor: pointer;
+      font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .db-btn-primary { background: var(--accent); color: #fff; }
+    .db-btn-primary:hover { background: #0d8f6e; }
+    .db-btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .db-btn-secondary:hover { background: var(--surface2); }
+    .db-btn-danger { background: #c0392b; color: #fff; }
+    .db-btn-danger:hover { background: #96281b; }
+
+    /* 입력 공통 */
+    .db-add-row { display: flex; gap: 8px; }
+    .db-add-input {
+      flex: 1; padding: 7px 10px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); font-size: 13px;
+    }
+    .db-add-input:focus { outline: none; border-color: var(--accent); }
+    .db-add-textarea {
+      width: 100%; min-height: 100px; padding: 8px 10px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); font-size: 13px; resize: vertical; box-sizing: border-box;
+    }
+    .db-add-textarea:focus { outline: none; border-color: var(--accent); }
+
+    /* 테이블 */
+    .db-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .db-table th, .db-table td {
+      border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top;
+    }
+    .db-table th { background: var(--surface); font-weight: 600; color: var(--muted); }
+    .db-table td { color: var(--text); }
+    .db-table td.text-cell {
+      max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--muted); font-size: 12px;
+    }
+    .db-table tr:hover td { background: var(--surface2); }
+
+    /* 페이지네이션 */
+    .db-pagination {
+      display: flex; align-items: center; gap: 10px; font-size: 13px;
+      color: var(--muted); justify-content: center;
+    }
+    .db-pagination button {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    .db-pagination button:disabled { opacity: 0.4; cursor: default; }
+    .db-loading { color: var(--muted); font-size: 13px; }
+
+    /* ── Thinking dots ── */
+    @keyframes blink { 0%,80%,100%{opacity:0} 40%{opacity:1} }
+    .thinking span {
+      display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+      background: var(--muted); margin: 0 2px;
+      animation: blink 1.4s infinite;
+    }
+    .thinking span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking span:nth-child(3) { animation-delay: 0.4s; }
+
+    /* empty state */
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 8px;
+      color: var(--muted); font-size: 14px;
+    }
+    .empty-state .logo { font-size: 36px; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    Self-Correction Agent
+    <span>Local-First AI</span>
+  </div>
+  <nav class="sidebar-nav">
+    <button class="nav-item active" onclick="switchTab('chat')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      채팅
+    </button>
+    <button class="nav-item" onclick="switchTab('db')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+        <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+      </svg>
+      지식베이스
+    </button>
+  </nav>
+</aside>
+
+<!-- Main content -->
+<div class="main-content">
+
+<!-- Chat panel -->
+<div id="chat-panel" class="panel active">
+  <div id="chat-messages">
+    <div class="empty-state" id="empty-state">
+      <div class="logo">🤖</div>
+      <div>Self-Correction Agent에게 질문하세요</div>
+    </div>
+  </div>
+
+  <div class="input-area">
+    <div class="input-row">
+      <textarea id="query-input" rows="1" placeholder="질문을 입력하세요..."></textarea>
+      <button id="send-btn" onclick="sendQuery()" title="전송 (Enter)">&#9658;</button>
+    </div>
+    <div class="model-row">
+      <span>Model:</span>
+      <input id="model-input" type="text" placeholder="예: openai:bitnet" value="openai:bitnet" />
+    </div>
+  </div>
+</div>
+
+<!-- DB panel -->
+<div id="db-panel" class="panel">
+
+  <!-- 서브탭 헤더 -->
+  <div class="db-sub-header">
+    <h2>LanceDB 지식베이스</h2>
+    <div class="db-sub-tabs">
+      <button class="db-sub-tab active" onclick="switchDbTab('list')">문서 목록</button>
+      <button class="db-sub-tab" onclick="switchDbTab('manage')">추가 / 관리</button>
+    </div>
+  </div>
+
+  <!-- 서브패널 1: 문서 목록 -->
+  <div id="db-list-panel" class="db-sub-panel">
+    <div class="db-toolbar">
+      <input id="db-search" class="db-search" type="text" placeholder="문서 검색..." oninput="dbSearch(this.value)" />
+    </div>
+    <div id="db-content" class="db-loading">로딩 중...</div>
+    <div id="db-pagination" class="db-pagination" style="display:none">
+      <button id="db-prev" onclick="dbPage(-1)" disabled>‹ 이전</button>
+      <span id="db-page-info"></span>
+      <button id="db-next" onclick="dbPage(1)">다음 ›</button>
+    </div>
+  </div>
+
+  <!-- 서브패널 2: 추가 / 관리 -->
+  <div id="db-manage-panel" class="db-sub-panel" style="display:none">
+
+    <!-- 문서 직접 추가 -->
+    <div class="manage-section">
+      <h3>문서 직접 추가</h3>
+      <div class="db-add-row">
+        <input id="add-topic" class="db-add-input" placeholder="Topic (예: GPT-4o)" />
+        <input id="add-source" class="db-add-input" placeholder="Source (예: OpenAI Blog)" />
+      </div>
+      <textarea id="add-text" class="db-add-textarea" placeholder="문서 내용을 입력하세요..."></textarea>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="db-btn db-btn-primary" onclick="addDocument()">추가</button>
+      </div>
+    </div>
+
+    <!-- 파일 업로드 -->
+    <div class="manage-section">
+      <h3>파일 업로드 (.txt)</h3>
+      <p class="manage-desc">.txt 파일을 업로드하면 자동으로 임베딩되어 지식베이스에 추가됩니다.<br>파일명이 Source, 첫 번째 줄이 Topic으로 사용됩니다.</p>
+      <div>
+        <label class="db-btn db-btn-secondary" style="cursor:pointer">
+          파일 선택
+          <input type="file" accept=".txt" style="display:none" onchange="uploadFile(this)" />
+        </label>
+      </div>
+    </div>
+
+    <!-- 지식베이스 초기화 -->
+    <div class="manage-section manage-danger">
+      <h3>지식베이스 초기화</h3>
+      <p class="manage-desc">현재 모든 문서(추가분 포함)를 삭제하고 기본 10개 데이터로 복원합니다.<br>이 작업은 되돌릴 수 없습니다.</p>
+      <div>
+        <button class="db-btn db-btn-danger" onclick="reseedDb()">초기화 실행</button>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /db-panel -->
+
+</div><!-- /main-content -->
+
+<script>
+// ── 상태 ───────────────────────────────────────────────────────────
+const PHASES = ['planning', 'searching', 'drafting', 'critiquing'];
+const PHASE_LABELS = {
+  planning: 'PLANNING', searching: 'SEARCHING',
+  drafting: 'DRAFTING', critiquing: 'CRITIQUING',
+};
+const PHASE_ICONS_TEXT = {
+  planning: '◎', searching: '⊙', drafting: '◈', critiquing: '◉',
+};
+
+let isRunning = false;
+let currentAgentBubble = null; // 현재 에이전트 버블 DOM 참조
+
+// ── 탭 전환 ────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.nav-item').forEach((b, i) => {
+    b.classList.toggle('active', ['chat','db'][i] === tab);
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(tab + '-panel').classList.add('active');
+  if (tab === 'db') loadDb();
+}
+
+// ── DB 서브탭 전환 ─────────────────────────────────────────────────
+function switchDbTab(tab) {
+  document.querySelectorAll('.db-sub-tab').forEach((b, i) => {
+    b.classList.toggle('active', ['list','manage'][i] === tab);
+  });
+  document.getElementById('db-list-panel').style.display   = tab === 'list'   ? 'flex' : 'none';
+  document.getElementById('db-manage-panel').style.display = tab === 'manage' ? 'flex' : 'none';
+  if (tab === 'list') loadDb();
+}
+
+// ── 전송 ───────────────────────────────────────────────────────────
+async function sendQuery() {
+  if (isRunning) return;
+  const query = document.getElementById('query-input').value.trim();
+  const model = document.getElementById('model-input').value.trim();
+  if (!query) return;
+
+  isRunning = true;
+  document.getElementById('send-btn').disabled = true;
+  document.getElementById('query-input').value = '';
+  autoResize(document.getElementById('query-input'));
+
+  // 빈 상태 숨기기
+  const empty = document.getElementById('empty-state');
+  if (empty) empty.remove();
+
+  // 사용자 버블
+  appendUserBubble(query);
+
+  // 에이전트 버블 (진행 중)
+  currentAgentBubble = appendAgentBubble();
+
+  try {
+    const res = await fetch('/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query, model: model || null}),
+    });
+    const {session_id} = await res.json();
+    listenSSE(session_id);
+  } catch (e) {
+    showError(currentAgentBubble, '서버 연결 실패: ' + e.message);
+    finishRun();
+  }
+}
+
+// ── SSE 수신 ───────────────────────────────────────────────────────
+function listenSSE(sessionId) {
+  const es = new EventSource(`/stream/${sessionId}`);
+  const bubble = currentAgentBubble;
+  const phaseStates = {}; // phase -> 'active' | 'done' | 'failed'
+  let logOpen = false;
+  let retryCount = 0;
+
+  es.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+
+    if (event.type === 'phase') {
+      const {phase, attempt} = event;
+
+      // 이전 active phase → done으로
+      Object.keys(phaseStates).forEach(p => {
+        if (phaseStates[p] === 'active') phaseStates[p] = 'done';
+      });
+
+      phaseStates[phase] = 'active';
+      if (attempt > 1) retryCount = attempt - 1;
+      renderPhaseTracker(bubble, phaseStates, retryCount);
+    }
+    else if (event.type === 'log') {
+      appendLogLine(bubble, event);
+    }
+    else if (event.type === 'result') {
+      // 마지막 active phase → done/failed
+      Object.keys(phaseStates).forEach(p => {
+        if (phaseStates[p] === 'active') {
+          phaseStates[p] = event.status === 'done' ? 'done' : 'failed';
+        }
+      });
+      // critiquing도 done으로
+      if (event.status === 'done') phaseStates['critiquing'] = 'done';
+      renderPhaseTracker(bubble, phaseStates, retryCount);
+      renderResult(bubble, event);
+      es.close();
+      finishRun();
+    }
+    else if (event.type === 'error') {
+      showError(bubble, event.message);
+      es.close();
+      finishRun();
+    }
+  };
+
+  es.onerror = () => {
+    showError(bubble, 'SSE 연결 끊김');
+    es.close();
+    finishRun();
+  };
+}
+
+// ── DOM 조작 ───────────────────────────────────────────────────────
+function appendUserBubble(text) {
+  const row = document.createElement('div');
+  row.className = 'message-row user';
+  row.innerHTML = `<div class="bubble">${escHtml(text)}</div>`;
+  document.getElementById('chat-messages').appendChild(row);
+  scrollBottom();
+}
+
+function appendAgentBubble() {
+  const row = document.createElement('div');
+  row.className = 'message-row agent';
+  row.innerHTML = `
+    <div class="bubble">
+      <div class="phase-tracker">
+        <div class="phase-tracker-title">Agent Processing</div>
+        <div class="phase-list" id="phase-list-${Date.now()}"></div>
+      </div>
+      <div class="log-toggle" onclick="toggleLog(this)">
+        <span class="arrow">▶</span> Activity Log
+      </div>
+      <div class="log-lines"></div>
+      <div class="result-area" style="display:none"></div>
+    </div>`;
+  document.getElementById('chat-messages').appendChild(row);
+  // 초기 phase tracker 렌더
+  renderPhaseTracker(row.querySelector('.bubble'), {}, 0);
+  scrollBottom();
+  return row.querySelector('.bubble');
+}
+
+function renderPhaseTracker(bubble, phaseStates, retryCount) {
+  const list = bubble.querySelector('.phase-list');
+  list.innerHTML = PHASES.map(p => {
+    const state = phaseStates[p] || 'pending';
+    const label = PHASE_LABELS[p];
+    let iconHtml, className;
+
+    if (state === 'done') {
+      iconHtml = '✓'; className = 'done';
+    } else if (state === 'active') {
+      iconHtml = '<div class="spinner"></div>'; className = 'active';
+    } else if (state === 'failed') {
+      iconHtml = '✗'; className = 'failed';
+    } else {
+      iconHtml = PHASE_ICONS_TEXT[p]; className = '';
+    }
+
+    const retryBadge = (state === 'active' && retryCount > 0)
+      ? `<span class="retry-badge">RETRY #${retryCount}</span>` : '';
+
+    return `
+      <div class="phase-item ${className}">
+        <div class="phase-icon">${iconHtml}</div>
+        <span>${label}</span>${retryBadge}
+      </div>`;
+  }).join('');
+  scrollBottom();
+}
+
+function appendLogLine(bubble, event) {
+  const lines = bubble.querySelector('.log-lines');
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  div.innerHTML = `<span style="color:var(--muted)">[${event.timestamp}]</span> ` +
+    `<span class="log-icon">${escHtml(event.icon)}</span> ` +
+    escHtml(event.message);
+  lines.appendChild(div);
+  if (lines.classList.contains('open')) lines.scrollTop = lines.scrollHeight;
+  scrollBottom();
+}
+
+function renderResult(bubble, event) {
+  const area = bubble.querySelector('.result-area');
+  area.style.display = 'block';
+  area.innerHTML = marked.parse(event.markdown || '') +
+    `<div class="score-row">
+      <span class="score-badge ${event.status !== 'done' ? 'failed' : ''}">
+        ${event.status === 'done' ? 'DONE' : 'FAILED'}
+      </span>
+      <span>Score ${(event.score || 0).toFixed(2)}</span>
+      <span>·</span>
+      <span>Retries ${event.retries || 0}</span>
+    </div>`;
+  scrollBottom();
+}
+
+function showError(bubble, msg) {
+  const area = bubble.querySelector('.result-area');
+  area.style.display = 'block';
+  area.innerHTML = `<div style="color:var(--phase-failed);font-size:13px">오류: ${escHtml(msg)}</div>`;
+  scrollBottom();
+}
+
+function toggleLog(toggle) {
+  toggle.classList.toggle('open');
+  const lines = toggle.nextElementSibling;
+  lines.classList.toggle('open');
+}
+
+// ── DB 탭 ──────────────────────────────────────────────────────────
+let dbOffset = 0;
+const dbLimit = 20;
+let dbTotal = 0;
+let dbQuery = '';
+
+async function loadDb() {
+  const el = document.getElementById('db-content');
+  el.innerHTML = '<div class="db-loading">로딩 중...</div>';
+  try {
+    const params = new URLSearchParams({ offset: dbOffset, limit: dbLimit });
+    if (dbQuery) params.set('q', dbQuery);
+    const res = await fetch('/db/documents?' + params);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    dbTotal = data.total;
+    renderDbTable(data.documents);
+    renderDbPagination();
+  } catch (e) {
+    el.innerHTML = `<div class="db-loading" style="color:var(--phase-failed)">로드 실패: ${e.message}</div>`;
+  }
+}
+
+function renderDbTable(docs) {
+  const el = document.getElementById('db-content');
+  if (docs.length === 0) {
+    el.innerHTML = '<div class="db-loading">문서가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = `
+    <table class="db-table">
+      <thead><tr><th>Topic</th><th>Source</th><th>내용 미리보기</th><th>작업</th></tr></thead>
+      <tbody>
+        ${docs.map(d => `
+          <tr>
+            <td>${escHtml(d.topic)}</td>
+            <td>${escHtml(d.source)}</td>
+            <td class="text-cell" title="${escHtml(d.text)}">${escHtml(d.text.slice(0, 120))}${d.text.length > 120 ? '...' : ''}</td>
+            <td><button class="db-btn db-btn-danger" data-id="${escHtml(d.id)}" onclick="deleteDocument(this.dataset.id)">삭제</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function renderDbPagination() {
+  const pg = document.getElementById('db-pagination');
+  const info = document.getElementById('db-page-info');
+  const prev = document.getElementById('db-prev');
+  const next = document.getElementById('db-next');
+  const currentPage = Math.floor(dbOffset / dbLimit) + 1;
+  const totalPages = Math.max(1, Math.ceil(dbTotal / dbLimit));
+  info.textContent = `${currentPage} / ${totalPages}  (총 ${dbTotal}건)`;
+  prev.disabled = dbOffset === 0;
+  next.disabled = dbOffset + dbLimit >= dbTotal;
+  pg.style.display = 'flex';
+}
+
+function dbSearch(value) {
+  dbQuery = value.trim();
+  dbOffset = 0;
+  loadDb();
+}
+
+function dbPage(direction) {
+  dbOffset = Math.max(0, dbOffset + direction * dbLimit);
+  loadDb();
+}
+
+async function addDocument() {
+  const topic  = document.getElementById('add-topic').value.trim();
+  const source = document.getElementById('add-source').value.trim();
+  const text   = document.getElementById('add-text').value.trim();
+  if (!text) { alert('내용을 입력하세요.'); return; }
+  try {
+    const res = await fetch('/db/documents', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ topic: topic || 'general', source: source || 'manual', text }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    document.getElementById('add-topic').value  = '';
+    document.getElementById('add-source').value = '';
+    document.getElementById('add-text').value   = '';
+    dbOffset = 0;
+    switchDbTab('list');   // 목록 탭으로 이동해서 추가된 문서 확인
+  } catch (e) { alert('추가 실패: ' + e.message); }
+}
+
+async function deleteDocument(docId) {
+  if (!confirm('이 문서를 삭제하시겠습니까?')) return;
+  try {
+    const res = await fetch('/db/documents/' + encodeURIComponent(docId), { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    await loadDb();
+  } catch (e) { alert('삭제 실패: ' + e.message); }
+}
+
+async function uploadFile(input) {
+  if (!input.files.length) return;
+  const formData = new FormData();
+  formData.append('file', input.files[0]);
+  try {
+    const res = await fetch('/db/upload', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    alert(`업로드 완료 (ID: ${data.doc_id})`);
+    dbOffset = 0;
+    switchDbTab('list');   // 목록 탭으로 이동
+  } catch (e) { alert('업로드 실패: ' + e.message); }
+  input.value = '';
+}
+
+async function reseedDb() {
+  if (!confirm('지식베이스를 초기 데이터로 초기화하시겠습니까?\n현재 추가한 문서가 모두 삭제됩니다.')) return;
+  try {
+    const res = await fetch('/db/seed', { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    dbOffset = 0;
+    document.getElementById('db-search').value = '';
+    dbQuery = '';
+    switchDbTab('list');   // 목록 탭으로 이동
+  } catch (e) { alert('초기화 실패: ' + e.message); }
+}
+
+// ── 유틸 ───────────────────────────────────────────────────────────
+function finishRun() {
+  isRunning = false;
+  document.getElementById('send-btn').disabled = false;
+}
+
+function scrollBottom() {
+  const msgs = document.getElementById('chat-messages');
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// textarea 자동 높이 조절
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+document.getElementById('query-input').addEventListener('input', function() {
+  autoResize(this);
+});
+
+// Enter → 전송, Shift+Enter → 줄바꿈
+document.getElementById('query-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendQuery();
+  }
+});
+</script>
+</body>
+</html>

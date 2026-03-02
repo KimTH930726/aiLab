@@ -1,9 +1,8 @@
 """
-Critic 노드: 규칙 기반 품질 검증 엔진.
+Critic 노드: 규칙 기반 품질 검증 엔진 (v2: 동적 eval_criteria 지원).
 
-CPU 효율을 위해 LLM 호출 없이 동작한다.
-LLM 기반 Critic으로 확장 시, Pydantic AI Agent에
-CriticVerdict를 result_type으로 지정하면 된다.
+- eval_criteria 있음 (LLM 모드): 동적으로 생성된 토픽 목록으로 채점
+- eval_criteria 없음 (mock 모드): REQUIRED_KEYWORDS fallback
 """
 from __future__ import annotations
 
@@ -20,33 +19,44 @@ from ..domain.constants import (
 
 def critic_evaluate(
     draft: str,
-    required_keywords: Optional[List[str]] = None,
+    eval_criteria: Optional[List[str]] = None,
     threshold: float = PASS_THRESHOLD,
 ) -> CriticVerdict:
     """
     규칙 기반 Critic: 초안 품질 평가.
 
     점수 가중치:
-      - 키워드 커버리지 : 40%
+      - 키워드 커버리지 : 40%  (eval_criteria 또는 REQUIRED_KEYWORDS)
       - 콘텐츠 길이     : 20%
       - 문서 구조 (##)  : 20%
       - 출처 인용       : 20%
 
     Hard gate: 키워드 커버리지 85% 미만이면 무조건 RETRY.
     """
-    kws = required_keywords or REQUIRED_KEYWORDS
+    # eval_criteria(LLM 동적 기준) 또는 REQUIRED_KEYWORDS(fallback)
+    kws: list = eval_criteria if eval_criteria else REQUIRED_KEYWORDS
     draft_lower = draft.lower()
     scores: list[float] = []
     missing: list[str] = []
     suggestions: list[str] = []
 
     # ── Check 1: 키워드 커버리지 (40%) ──
+    # 각 항목은 str(단일) 또는 tuple(OR 그룹) — 하나라도 있으면 통과
     found = 0
     for kw in kws:
-        if kw.lower() in draft_lower:
-            found += 1
+        if isinstance(kw, (list, tuple)):
+            # OR 그룹: 하나라도 있으면 통과
+            hit = any(variant.lower() in draft_lower for variant in kw)
+            if hit:
+                found += 1
+            else:
+                # 누락 표시는 첫 번째 변형(한국어 우선)으로 표기
+                missing.append(kw[0])
         else:
-            missing.append(kw)
+            if kw.lower() in draft_lower:
+                found += 1
+            else:
+                missing.append(kw)
 
     kw_ratio = found / len(kws) if kws else 1.0
     scores.append(kw_ratio * 0.4)

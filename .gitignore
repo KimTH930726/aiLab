@@ -1,0 +1,17 @@
+# 대용량 모델 파일
+*.gguf
+*.bin
+*.pt
+*.ckpt
+models/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 임시/로컬 데이터
+/tmp/
+*.log

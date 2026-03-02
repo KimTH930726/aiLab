@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Phase(str, Enum):
@@ -48,6 +48,8 @@ class AgentState(BaseModel):
     모든 노드(Planner, Searcher, Worker, Critic)가 이 객체를 공유하며,
     phase 전이를 통해 상태 머신이 구동된다.
     """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     phase: Phase = Phase.PLANNING
     query: str = ""
 
@@ -69,6 +71,12 @@ class AgentState(BaseModel):
     # Final
     final_result: Optional[str] = None
 
+    # v2: LLM이 생성한 동적 채점 기준 (None이면 REQUIRED_KEYWORDS fallback)
+    eval_criteria: Optional[List[str]] = None
+
+    # Web UI 이벤트 콜백 (Pydantic 직렬화 제외)
+    on_event: Optional[Any] = Field(default=None, exclude=True)
+
     @property
     def can_retry(self) -> bool:
         return self.retry_count < self.max_retries
@@ -79,3 +87,11 @@ class AgentState(BaseModel):
         entry = f"[{ts}] {icon} {msg}"
         self.history.append(entry)
         print(f"  {entry}")
+        if self.on_event:
+            self.on_event({
+                "type": "log",
+                "phase": self.phase.value,
+                "icon": icon,
+                "message": msg,
+                "timestamp": ts,
+            })
