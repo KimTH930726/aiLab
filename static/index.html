@@ -302,6 +302,42 @@
     #model-input:focus { border-color: var(--accent); }
     #model-input::placeholder { color: var(--muted); }
 
+    /* ── 검색 테스트 섹션 ── */
+    .search-test-section {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .search-test-section h3 { font-size: 13px; font-weight: 600; margin: 0; color: var(--text); }
+    .search-test-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .search-test-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .search-test-input {
+      flex: 1; min-width: 180px; padding: 7px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); font-size: 13px;
+    }
+    .search-test-input:focus { outline: none; border-color: var(--accent); }
+    input[type="range"].alpha-slider {
+      -webkit-appearance: none; appearance: none;
+      width: 120px; height: 4px; border-radius: 2px;
+      background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct,70%), var(--surface) var(--pct,70%), var(--surface) 100%);
+      outline: none; cursor: pointer;
+    }
+    input[type="range"].alpha-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: var(--accent); cursor: pointer; border: 2px solid #fff;
+    }
+    .search-results-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .search-results-table th, .search-results-table td {
+      border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top;
+    }
+    .search-results-table th { background: var(--surface); font-weight: 600; color: var(--muted); }
+    .search-results-table td { color: var(--text); }
+    .score-cell { font-family: monospace; font-size: 11px; }
+    .score-bar {
+      display: inline-block; height: 8px; background: var(--accent);
+      border-radius: 2px; margin-right: 4px; vertical-align: middle;
+    }
+
     /* ── DB panel ── */
     #db-panel { padding: 0; overflow: hidden; flex-direction: column; }
 
@@ -462,7 +498,7 @@
     </div>
     <div class="model-row">
       <span>Model:</span>
-      <input id="model-input" type="text" placeholder="예: openai:bitnet" value="openai:bitnet" />
+      <input id="model-input" type="text" placeholder="예: ollama:exaone3.5:7.8b" value="ollama:exaone3.5:7.8b" />
     </div>
   </div>
 </div>
@@ -481,8 +517,32 @@
 
   <!-- 서브패널 1: 문서 목록 -->
   <div id="db-list-panel" class="db-sub-panel">
+
+    <!-- 유사도 검색 테스트 -->
+    <div class="search-test-section">
+      <h3>유사도 검색 테스트</h3>
+      <div class="search-test-row">
+        <input id="st-query" class="search-test-input" type="text" placeholder="검색어 입력 (예: GPT-4o multimodal)..." />
+        <button class="db-btn db-btn-primary" onclick="runSearchTest()">검색</button>
+      </div>
+      <div class="search-test-row">
+        <span class="search-test-label">Alpha (키워드 ↔ 의미):</span>
+        <input id="st-alpha" type="range" class="alpha-slider" min="0" max="1" step="0.05" value="0.7"
+               oninput="updateAlphaDisplay(this.value)" style="--pct:70%" />
+        <span id="st-alpha-val" style="font-size:12px;color:var(--muted);min-width:32px">0.70</span>
+        <span class="search-test-label" style="margin-left:8px">Top-K:</span>
+        <input id="st-topk" type="number" min="1" max="20" value="5"
+               style="width:50px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px" />
+        <span class="search-test-label" style="margin-left:8px">거리 임계값:</span>
+        <input id="st-threshold" type="number" min="0" max="10" step="0.1" value="1.5"
+               style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px" />
+      </div>
+      <div id="st-results" style="display:none"></div>
+    </div>
+
+    <!-- 문서 목록 필터 -->
     <div class="db-toolbar">
-      <input id="db-search" class="db-search" type="text" placeholder="문서 검색..." oninput="dbSearch(this.value)" />
+      <input id="db-search" class="db-search" type="text" placeholder="문서 필터 검색..." oninput="dbSearch(this.value)" />
     </div>
     <div id="db-content" class="db-loading">로딩 중...</div>
     <div id="db-pagination" class="db-pagination" style="display:none">
@@ -517,6 +577,31 @@
           파일 선택
           <input type="file" accept=".txt" style="display:none" onchange="uploadFile(this)" />
         </label>
+      </div>
+    </div>
+
+    <!-- 검색 전략 설정 (전역) -->
+    <div class="manage-section" id="settings-section">
+      <h3>검색 전략 설정 (전역)</h3>
+      <p class="manage-desc">에이전트 실행 시 사용되는 검색 파라미터입니다. settings.json에 저장됩니다.</p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px">
+        <div class="search-test-row">
+          <span class="search-test-label" style="width:130px">Alpha (키워드↔의미):</span>
+          <input id="gs-alpha" type="range" class="alpha-slider" min="0" max="1" step="0.05" value="0.7"
+                 oninput="updateGsAlphaDisplay(this.value)" style="--pct:70%" />
+          <span id="gs-alpha-val" style="font-size:12px;color:var(--text);min-width:32px">0.70</span>
+        </div>
+        <div class="search-test-row">
+          <span class="search-test-label" style="width:130px">거리 임계값:</span>
+          <input id="gs-threshold" type="number" min="0.1" max="10" step="0.1" value="1.5"
+                 style="width:70px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px" />
+          <span class="search-test-label" style="margin-left:16px">Top-K:</span>
+          <input id="gs-topk" type="number" min="1" max="20" value="2"
+                 style="width:60px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px" />
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:4px">
+        <button class="db-btn db-btn-primary" onclick="saveSettings()">설정 저장</button>
       </div>
     </div>
 
@@ -566,6 +651,7 @@ function switchDbTab(tab) {
   document.getElementById('db-list-panel').style.display   = tab === 'list'   ? 'flex' : 'none';
   document.getElementById('db-manage-panel').style.display = tab === 'manage' ? 'flex' : 'none';
   if (tab === 'list') loadDb();
+  if (tab === 'manage') loadSettings();
 }
 
 // ── 전송 ───────────────────────────────────────────────────────────
@@ -758,6 +844,112 @@ function toggleLog(toggle) {
   lines.classList.toggle('open');
 }
 
+// ── 검색 테스트 ─────────────────────────────────────────────────────
+function updateAlphaDisplay(val) {
+  document.getElementById('st-alpha-val').textContent = parseFloat(val).toFixed(2);
+  const pct = Math.round(parseFloat(val) * 100);
+  document.getElementById('st-alpha').style.setProperty('--pct', pct + '%');
+}
+
+function updateGsAlphaDisplay(val) {
+  document.getElementById('gs-alpha-val').textContent = parseFloat(val).toFixed(2);
+  const pct = Math.round(parseFloat(val) * 100);
+  document.getElementById('gs-alpha').style.setProperty('--pct', pct + '%');
+}
+
+async function runSearchTest() {
+  const q = document.getElementById('st-query').value.trim();
+  if (!q) return;
+  const alpha = parseFloat(document.getElementById('st-alpha').value);
+  const topK = parseInt(document.getElementById('st-topk').value) || 5;
+  const threshold = parseFloat(document.getElementById('st-threshold').value) || 1.5;
+  const el = document.getElementById('st-results');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="db-loading">검색 중...</div>';
+  try {
+    const params = new URLSearchParams({ q, top_k: topK, alpha, threshold });
+    const res = await fetch('/db/search?' + params);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderSearchResults(el, data);
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--phase-failed);font-size:12px">검색 실패: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderSearchResults(el, data) {
+  if (!data.results || data.results.length === 0) {
+    el.innerHTML = '<div class="db-loading">검색 결과 없음</div>';
+    return;
+  }
+  const rows = data.results.map(r => {
+    const vs = r.vector_score || 0;
+    const bs = r.bm25_score || 0;
+    const cs = r.combined_score || 0;
+    const bar = (s) => `<span class="score-bar" style="width:${Math.round(s*40)}px"></span>`;
+    return `<tr>
+      <td>${escHtml(r.topic || '')}</td>
+      <td class="text-cell" title="${escHtml(r.text || '')}">${escHtml((r.text || '').slice(0, 80))}...</td>
+      <td class="score-cell">${bar(vs)}${vs.toFixed(3)}</td>
+      <td class="score-cell">${bar(bs)}${bs.toFixed(3)}</td>
+      <td class="score-cell"><strong>${bar(cs)}${cs.toFixed(3)}</strong></td>
+      <td>${escHtml(r.source || '')}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <table class="search-results-table">
+      <thead><tr>
+        <th>Topic</th><th>내용 미리보기</th>
+        <th>벡터</th><th>BM25</th><th>종합</th><th>출처</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">
+      alpha=${data.alpha} | threshold=${data.threshold} | ${data.results.length}건
+    </div>`;
+}
+
+// ── 검색 설정 로딩/저장 ─────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const res = await fetch('/db/settings');
+    if (!res.ok) return;
+    const s = await res.json();
+    const alpha = s.alpha ?? 0.7;
+    const threshold = s.distance_threshold ?? 1.5;
+    const topK = s.top_k ?? 2;
+    const gsAlpha = document.getElementById('gs-alpha');
+    if (gsAlpha) {
+      gsAlpha.value = alpha;
+      updateGsAlphaDisplay(alpha);
+    }
+    const gsThreshold = document.getElementById('gs-threshold');
+    if (gsThreshold) gsThreshold.value = threshold;
+    const gsTopk = document.getElementById('gs-topk');
+    if (gsTopk) gsTopk.value = topK;
+    // 검색 테스트 슬라이더도 동기화
+    const stAlpha = document.getElementById('st-alpha');
+    if (stAlpha) { stAlpha.value = alpha; updateAlphaDisplay(alpha); }
+    const stThreshold = document.getElementById('st-threshold');
+    if (stThreshold) stThreshold.value = threshold;
+  } catch (e) { /* 무시 */ }
+}
+
+async function saveSettings() {
+  const alpha = parseFloat(document.getElementById('gs-alpha').value);
+  const threshold = parseFloat(document.getElementById('gs-threshold').value);
+  const topK = parseInt(document.getElementById('gs-topk').value);
+  try {
+    const res = await fetch('/db/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ alpha, distance_threshold: threshold, top_k: topK }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    alert('설정이 저장되었습니다.');
+  } catch (e) { alert('저장 실패: ' + e.message); }
+}
+
 // ── DB 탭 ──────────────────────────────────────────────────────────
 let dbOffset = 0;
 const dbLimit = 20;
@@ -912,6 +1104,13 @@ document.getElementById('query-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendQuery();
+  }
+});
+
+// 검색 테스트: Enter 키
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && document.activeElement === document.getElementById('st-query')) {
+    runSearchTest();
   }
 });
 </script>

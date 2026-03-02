@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 from .domain.state import Phase, AgentState
 from .infra.vectordb import LocalRAG
+from .infra.settings import load_settings
 from .knowledge import KNOWLEDGE_BASE
 from .nodes.planner import plan_search_queries
 from .nodes.searcher import execute_search
@@ -39,7 +40,7 @@ def run_agent(
     if verbose:
         print("\n" + "=" * 60)
         print("  Self-Correction Agent | Local-First AI")
-        print("  LanceDB (RAG) + Pydantic AI + BitNet b1.58 (Sim)")
+        print("  LanceDB (RAG) + Pydantic AI + Ollama EXAONE 3.5")
         print("=" * 60)
 
     mode = "mock"
@@ -52,11 +53,18 @@ def run_agent(
     if verbose:
         print(f"  Mode   : {mode}" + (f" ({model_name})" if model_name else ""))
 
+    # 검색 설정 로딩 (settings.json)
+    settings = load_settings(db_path)
+    alpha = float(settings.get("alpha", 0.7))
+    distance_threshold = float(settings.get("distance_threshold", 1.5))
+    top_k = int(settings.get("top_k", 2))
+
     rag = LocalRAG(db_path)
-    n = rag.initialize(KNOWLEDGE_BASE)  # v2: 이미 데이터 있으면 재생성 안 함
+    n = rag.initialize(KNOWLEDGE_BASE)  # v3: 차원 불일치 시 자동 마이그레이션
 
     if verbose:
-        print(f"  LanceDB: {n} documents indexed")
+        print(f"  LanceDB: {n} chunks indexed")
+        print(f"  Search : alpha={alpha}, threshold={distance_threshold}, top_k={top_k}")
         print(f"  Query  : {query}")
         print("=" * 60)
 
@@ -88,13 +96,18 @@ def run_agent(
         # ── PLANNING ──
         if state.phase == Phase.PLANNING:
             state.log("Analyzing query, planning search strategy...")
-            plan_search_queries(state, query, model_name=model_name)  # v2: LLM 확장
+            plan_search_queries(state, query, model_name=model_name)
             state.phase = Phase.SEARCHING
 
         # ── SEARCHING ──
         elif state.phase == Phase.SEARCHING:
-            state.log("Querying LanceDB knowledge base...")
-            results = execute_search(rag, state.search_queries_used, state)
+            state.log("Querying LanceDB knowledge base (hybrid search)...")
+            results = execute_search(
+                rag, state.search_queries_used, state,
+                top_k=top_k,
+                alpha=alpha,
+                distance_threshold=distance_threshold,
+            )
 
             if not results:
                 state.log("No results found. Cannot proceed.")

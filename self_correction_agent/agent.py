@@ -2,9 +2,9 @@
 Pydantic AI Agent 팩토리: LanceDB Tool이 주입된 LLM Agent 생성.
 
 --model 옵션이 제공될 때만 활성화된다.
-BitNet b1.58 via bitnet.cpp:
-  1. bitnet.cpp 서버 실행 (OpenAI 호환 엔드포인트)
-  2. --model openai:bitnet 으로 연결
+Ollama (EXAONE 등):
+  1. Ollama 서버 실행 (brew services start ollama)
+  2. --model ollama:exaone3.5:7.8b 으로 연결
 """
 import json
 import textwrap
@@ -25,9 +25,9 @@ def create_pydantic_agent(model_name: str) -> Any:
     Pydantic AI Agent 생성.
 
     model_name 예시:
-      - 'ollama:llama3.2'    -> 로컬 Ollama (tools 지원)
-      - 'openai:gpt-4o-mini' -> OpenAI API (tools 지원)
-      - 'openai:bitnet'      -> BitNet via bitnet.cpp (tools 미지원 → no-tool 모드)
+      - 'ollama:exaone3.5:7.8b' -> 로컬 Ollama EXAONE (tools 지원)
+      - 'ollama:llama3.1'       -> 로컬 Ollama Llama (tools 지원)
+      - 'openai:gpt-4o-mini'    -> OpenAI API (tools 지원)
 
     반환값: (agent, use_tools: bool) 튜플
     """
@@ -35,11 +35,9 @@ def create_pydantic_agent(model_name: str) -> Any:
         print("  [WARN] pydantic-ai not installed. Falling back to mock mode.")
         return None, False
 
-    # bitnet.cpp / 로컬 서버는 function calling(tools)을 지원하지 않음
-    # → 검색 결과를 프롬프트에 임베드하는 no-tool 모드 사용
-    LOCAL_NO_TOOL_MODELS = {"bitnet", "local"}
-    model_id = model_name.split(":")[-1].lower()
-    use_tools = model_id not in LOCAL_NO_TOOL_MODELS
+    # tools 미지원 모델 (부분 문자열 매칭)
+    LOCAL_NO_TOOL_MODELS: set[str] = {"exaone"}
+    use_tools = not any(m in model_name.lower() for m in LOCAL_NO_TOOL_MODELS)
 
     agent = Agent(
         model_name,

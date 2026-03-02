@@ -12,7 +12,10 @@ python3 -m self_correction_agent --query "..."
   └─ orchestrator.run_agent(query, model_name, db_path)
 ```
 
-`--model` 미지정 → `mode="mock"` / 지정 시 `create_pydantic_agent()` 호출 후 `mode="pydantic-ai"` 또는 `"pydantic-ai-notool"` (BitNet 등 Function Calling 미지원 모델)
+`--model` 미지정 → `mode="mock"` / 지정 시 `create_pydantic_agent()` 호출 후 `mode="pydantic-ai"`
+
+> **EXAONE 특이사항**: EXAONE 3.5는 Ollama에서 function calling을 지원하지 않는다.
+> `_LOCAL_NO_TOOL_MODELS = {"exaone"}` 에 등록되어 tools 없는 텍스트 파싱 경로로 실행된다.
 
 ### 상태 머신 구조 — orchestrator.py
 
@@ -56,29 +59,55 @@ while state.phase not in (Phase.DONE, Phase.FAILED):
 
 처리:
   if TABLE_NAME in db.table_names():
-      open existing table → 재생성 없음 (v2: 기존 데이터 보존)
+      open existing table
+      sample = table.to_arrow().slice(0, 1)
+      if len(sample[0]["vector"]) != 384:   # 구 BoW(48차원) 감지
+          db.drop_table() → seed(seed_docs)  # 자동 마이그레이션
+      else:
+          _rebuild_bm25()  # BM25 인덱스 재구성 후 반환
   else:
       seed(KNOWLEDGE_BASE) → 신규 생성
 
-출력: 현재 인덱싱된 문서 수 (기존 + 추가분 포함)
+출력: 현재 인덱싱된 청크 수
 ```
 
-> v1의 `seed()`는 매 호출마다 테이블 DROP → v2의 `initialize()`는 테이블이 있으면 그냥 반환.
+> `initialize()`는 테이블이 있으면 재생성하지 않는다 — 웹 UI에서 추가한 문서가 재시작 후에도 유지됨.
 > 강제 재초기화가 필요하면 `/db/seed` 엔드포인트 또는 `LocalRAG.seed()` 직접 호출.
 
-### Bag-of-Words 임베딩 — `text_to_vector(text)`
+### Sentence Transformers 임베딩 — `text_to_vector(text)`
 
 ```
 입력: "GPT-4o (omni) was released in May 2024..."
 
 처리:
-  1. text.lower() → 소문자 변환
-  2. _VOCAB 60개 단어 각각 출현 횟수 카운트
-     예: "model"→2회, "multimodal"→1회, "sora"→0회
-  3. 60차원 벡터 생성 → L2 정규화 (코사인 유사도 검색 가능)
+  1. 모듈 레벨 싱글톤 _model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2') 로드
+     (한/영 다국어, ~470MB, 첫 호출 시 초기화)
+  2. model.encode(text, normalize_embeddings=True)
+     → 384차원 float32 numpy 배열 (L2 정규화 포함)
+  3. .tolist() → Python float 리스트 반환
 
-출력: [0.0, 0.123, 0.456, ...] (60차원 float 리스트)
+출력: [0.037, -0.009, 0.028, ...] (384차원 float 리스트)
 ```
+
+> BoW(48차원) 대비: 어휘 겹침 없이도 의미 유사도 계산 가능, 한국어 정확도 대폭 향상.
+
+### 문서 청킹 — `chunker.chunk_text(text)`
+
+```
+입력: 긴 문서 문자열
+
+처리:
+  if len(text) <= 500: return [text]
+  슬라이딩 윈도우:
+    start=0, end=min(start+500, len)
+    chunks.append(text[start:end])
+    start = end - 50   ← 50자 오버랩
+  마지막 청크 < 125자이면 이전 청크에 흡수
+
+출력: 청크 리스트 (각 ≤500자, 50자 오버랩)
+```
+
+각 청크는 개별 `text_to_vector()` 호출 → 별도 384차원 벡터 → LanceDB에 같은 `parent_id`로 저장.
 
 ---
 
@@ -98,14 +127,13 @@ while state.phase not in (Phase.DONE, Phase.FAILED):
 
     tool-capable 모델 (GPT 등):
       → Agent(result_type=ExpandedQueries)로 구조화 JSON 출력
-    no-tool 모델 (BitNet 등, _LOCAL_NO_TOOL_MODELS):
+    no-tool 모델 (EXAONE 등, _LOCAL_NO_TOOL_MODELS에 등록):
       → Agent()로 줄바꿈 텍스트 출력 → _parse_lines()로 파싱
-      → 번호·기호 자동 제거, 최대 4개 추출
     실패 시 [] 반환 → heuristic fallback
 
   generate_eval_criteria(base_query, model_name)  [nodes/llm_helpers.py]
     tool-capable 모델: result_type=EvalCriteria (JSON)
-    no-tool 모델: 줄바꿈 텍스트 → _parse_lines() → 최대 10개 추출
+    no-tool 모델 (EXAONE 등): 줄바꿈 텍스트 → _parse_lines() → 최대 10개 추출
     → state.eval_criteria에 저장 → CRITIQUING에서 사용
     → 실패 시 → REQUIRED_KEYWORDS fallback
 
@@ -125,19 +153,23 @@ while state.phase not in (Phase.DONE, Phase.FAILED):
 ## 3. SEARCHING — `nodes/searcher.py:execute_search()`
 
 ```
-입력: rag, queries (4~N개), state, top_k=2
+입력: rag, queries (4~N개), state, top_k=2, alpha=0.7, distance_threshold=1.5
 
 처리:
   seen = set()
   for sq in queries:
-      hits = rag.search(sq, top_k=2)
-        └─ text_to_vector(sq) → 60차원 쿼리 벡터
-        └─ LanceDB.search(query_vec).limit(2) → L2 거리 기반 유사 문서
+      hits = rag.hybrid_search(sq, top_k=2, alpha=alpha, distance_threshold=distance_threshold)
+        └─ 벡터 검색: text_to_vector(sq) → 384차원 → LanceDB.search() → 거리 기반 후보
+        └─ BM25 검색: BM25Okapi.get_scores(sq.lower().split()) → 키워드 점수
+        └─ 결합: alpha * norm_vec + (1-alpha) * norm_bm25
+        └─ parent_id 중복 제거 (최고 combined 청크만 유지)
       for h in hits:
-          key = h["text"][:80]   ← 중복 방지 키
+          key = h["text"][:80]   ← 쿼리 간 중복 방지 키
           if key not in seen: seen.add(key); all_results.append(h)
 
   state.search_results = all_results
+
+alpha/threshold 값은 orchestrator가 settings.json에서 로드하여 전달.
 
 출력: 1차 시도 약 5건, 재시도 약 7~10건 (중복 제거 후)
 상태 전이: 결과 있음→DRAFTING, 없음→FAILED
@@ -177,9 +209,13 @@ while state.phase not in (Phase.DONE, Phase.FAILED):
 
   작성 규칙: 한국어로, ## 헤더, 출처: ... 형식, 사실 기반
 
-pydantic_agent.run_sync(prompt, deps=rag)  # tools 모드
-pydantic_agent.run_sync(prompt)            # no-tool 모드 (BitNet)
-return result.output  # pydantic-ai >= 0.1.0
+tools 지원 모델 (GPT 등):
+  agent.run_sync(prompt, deps=rag)  # LanceDB search tool 사용 가능
+
+no-tool 모델 (EXAONE 등):
+  agent.run_sync(prompt)  # 검색 결과는 프롬프트에 직접 포함 (tools 없음)
+
+return result.output  # pydantic-ai >= 1.0
 ```
 
 ---
@@ -241,12 +277,14 @@ else:
 
 | 메서드 | 기능 |
 |--------|------|
-| `initialize(seed_docs)` | 테이블 없을 때만 생성+시드. 있으면 그냥 반환 |
-| `seed(documents)` | 강제 재초기화 (DROP → CREATE). 관리자 전용 |
-| `search(query, top_k)` | 코사인 유사도 검색 |
-| `add_document(doc)` | 단일 문서 추가, 생성된 doc_id 반환 |
-| `delete_document(doc_id)` | id 기준 삭제 |
-| `list_documents(offset, limit)` | 페이지네이션 목록 (vector 컬럼 제외) |
+| `initialize(seed_docs)` | 테이블 없을 때만 생성+시드. 있으면 차원 확인 후 마이그레이션 또는 재사용 |
+| `seed(documents)` | 강제 재초기화 (DROP → 청킹+임베딩 → CREATE). 관리자 전용 |
+| `hybrid_search(query, top_k, alpha, distance_threshold)` | 벡터+BM25 하이브리드 검색. `parent_id` 중복 제거 후 `top_k` 반환 |
+| `search(query, top_k)` | `hybrid_search` 기본값(alpha=0.7) 래퍼 |
+| `add_document(doc)` | 청킹+임베딩 후 추가. `parent_id` 반환. `_rebuild_bm25()` 자동 호출 |
+| `delete_document(doc_id)` | `parent_id` 기준으로 해당 문서의 모든 청크 삭제 |
+| `list_documents(offset, limit)` | `chunk_index==0` 청크만 반환 (`parent_id` 중복 제거). `id` 컬럼은 `parent_id` 값 |
+| `_rebuild_bm25()` | 전체 청크 텍스트로 BM25Okapi 인덱스 재구성 |
 
 ---
 
@@ -255,39 +293,91 @@ else:
 ```
 시간  함수                              phase 전이            핵심 데이터
 ─────┬──────────────────────────────────┬─────────────────────┬──────────────────────
- T0  │ run_agent()                      │                     │ mode=pydantic-ai-notool
- T1  │ LocalRAG.initialize(10건)        │                     │ 기존 테이블 있으면 재사용
- T2  │ AgentState(query=...)            │ → PLANNING          │ 빈 상태 초기화
+ T0  │ run_agent()                      │                     │ mode=pydantic-ai
+ T1  │ load_settings(db_path)           │                     │ alpha=0.7, top_k=2
+ T2  │ LocalRAG.initialize(10건)        │                     │ ST 384차원, BM25 재구성
+ T3  │ AgentState(query=...)            │ → PLANNING          │ 빈 상태 초기화
 ─────┼── 1차 시도 ───────────────────────┼─────────────────────┼──────────────────────
- T3  │ plan_search_queries()            │ PLANNING→SEARCHING  │ LLM 확장 4개 쿼리
+ T4  │ plan_search_queries()            │ PLANNING→SEARCHING  │ LLM 확장 4개 쿼리
      │   expand_query_with_llm()        │                     │ eval_criteria 생성 → 저장
      │   generate_eval_criteria()       │                     │
- T4  │ execute_search()                 │ SEARCHING→DRAFTING  │ search_results=[5건]
- T5  │ worker_generate_draft()          │ DRAFTING→CRITIQUING │ draft 생성
- T6  │ critic_evaluate(eval_criteria=…) │ CRITIQUING→PLANNING │ score=0.85, passed=F
+ T5  │ execute_search()                 │ SEARCHING→DRAFTING  │ hybrid_search × 4쿼리
+     │   hybrid_search(alpha=0.7)       │                     │ search_results=[5건]
+ T6  │ worker_generate_draft()          │ DRAFTING→CRITIQUING │ draft 생성
+ T7  │ critic_evaluate(eval_criteria=…) │ CRITIQUING→PLANNING │ score=0.85, passed=F
      │                                  │                     │ missing=[Sora,o1]
      │                                  │                     │ retry_count: 0→1
 ─────┼── 2차 시도 (Self-Healing) ────────┼─────────────────────┼──────────────────────
- T7  │ plan_search_queries()            │ PLANNING→SEARCHING  │ 기존 4 + 누락 2 = 6쿼리
- T8  │ execute_search()                 │ SEARCHING→DRAFTING  │ search_results=[7건]
- T9  │ worker_generate_draft()          │ DRAFTING→CRITIQUING │ Sora, o1 포함 draft
- T10 │ critic_evaluate(eval_criteria=…) │ CRITIQUING→DONE     │ score=1.00, passed=T
+ T8  │ plan_search_queries()            │ PLANNING→SEARCHING  │ 기존 4 + 누락 2 = 6쿼리
+ T9  │ execute_search()                 │ SEARCHING→DRAFTING  │ search_results=[7건]
+ T10 │ worker_generate_draft()          │ DRAFTING→CRITIQUING │ Sora, o1 포함 draft
+ T11 │ critic_evaluate(eval_criteria=…) │ CRITIQUING→DONE     │ score=1.00, passed=T
 ─────┼──────────────────────────────────┼─────────────────────┼──────────────────────
- T11 │ return state.final_result        │ DONE                │ 최종 리포트 반환
+ T12 │ return state.final_result        │ DONE                │ 최종 리포트 반환
 ```
 
 ---
 
-## 9. 함수 호출 그래프
+## 9. Ollama 연결 구조
+
+### Docker ↔ Ollama 통신 경로
+
+```
+Docker Container
+  Agent("ollama:exaone3.5:7.8b")
+    └─ pydantic-ai 1.x: ollama: prefix → OpenAIChatModel 사용
+    └─ OLLAMA_BASE_URL = http://host.docker.internal:11434/v1
+    └─ POST http://host.docker.internal:11434/v1/chat/completions
+         ↕ host.docker.internal (macOS: 자동 해석, Linux: extra_hosts 필요)
+Ollama (호스트 macOS, brew services)
+  :11434/v1/chat/completions  ← OpenAI 호환 엔드포인트
+  exaone3.5:7.8b 모델 응답
+```
+
+### 환경변수 역할
+
+| 변수 | 값 | 설명 |
+|------|----|------|
+| `AGENT_MODEL` | `ollama:exaone3.5:7.8b` | pydantic-ai에 전달되는 모델 문자열 |
+| `OLLAMA_BASE_URL` | `http://host.docker.internal:11434/v1` | pydantic-ai `ollama:` prefix가 사용하는 base URL. `/v1` 필수 |
+| `OPENAI_BASE_URL` | `http://host.docker.internal:11434/v1` | `openai:` prefix 또는 OpenAI SDK 직접 사용 시 |
+| `OPENAI_API_KEY` | `dummy-key-for-local` | OpenAI SDK가 키를 요구하나 로컬은 임의 값 허용 |
+
+### pydantic-ai 1.x `ollama:` prefix 처리 메커니즘
+
+```python
+# pydantic-ai가 "ollama:exaone3.5:7.8b" 문자열을 받으면:
+# 1. OpenAIChatModel로 라우팅 (OpenAI 호환 클라이언트)
+# 2. base_url = os.environ["OLLAMA_BASE_URL"]
+# 3. 최종 URL = f"{base_url}/chat/completions"
+#    → "http://host.docker.internal:11434/v1/chat/completions" ✓
+#    (/v1 없으면 → "/chat/completions" → 404)
+```
+
+### EXAONE tool calling 미지원
+
+```python
+# agent.py / llm_helpers.py
+_LOCAL_NO_TOOL_MODELS = {"exaone"}  # 부분 문자열 매칭
+
+# "ollama:exaone3.5:7.8b".lower()에 "exaone" 포함 → use_tools = False
+# → result_type=ExpandedQueries 사용 안 함 (structured output 불가)
+# → 줄바꿈 텍스트 출력 → _parse_lines() 파싱
+```
+
+---
+
+## 10. 함수 호출 그래프
 
 ```
 run_agent()
-  ├─ create_pydantic_agent()          # model 있을 때만
+  ├─ load_settings(db_path)             # settings.json → alpha/threshold/top_k
+  ├─ create_pydantic_agent()            # model 있을 때만
   ├─ LocalRAG.initialize()
-  │    └─ (없을 때만) seed() → text_to_vector() × 10
-  │         ├─ text.lower()
-  │         ├─ _VOCAB 60단어 카운트 → numpy 벡터
-  │         └─ L2 정규화
+  │    └─ (없을 때만) seed()
+  │         ├─ chunk_text(doc["text"])  # 500자/50자 슬라이딩 윈도우
+  │         ├─ text_to_vector(chunk) × 청크마다   # ST 384차원
+  │         └─ _rebuild_bm25()         # BM25Okapi 인덱스 구성
   └─ while loop:
        ├─ [PLANNING]   plan_search_queries(state, query, model_name)
        │    ├─ (첫 시도 + LLM) expand_query_with_llm()    → ExpandedQueries
@@ -296,12 +386,16 @@ run_agent()
        │    │    └─ state.eval_criteria 저장
        │    └─ (재시도) missing_keywords → 추가 쿼리
        │
-       ├─ [SEARCHING]  execute_search(rag, queries, state)
-       │    └─ rag.search(query, top_k=2) × N쿼리 → 중복 제거
+       ├─ [SEARCHING]  execute_search(rag, queries, state, alpha, threshold)
+       │    └─ rag.hybrid_search(query, top_k, alpha, distance_threshold) × N쿼리
+       │         ├─ text_to_vector(query) → LanceDB.search() → vec_sim 점수
+       │         ├─ BM25Okapi.get_scores() → bm25_sim 점수
+       │         ├─ combined = alpha * vec_sim + (1-alpha) * bm25_sim
+       │         └─ parent_id 중복 제거 → top_k 반환
        │
        ├─ [DRAFTING]   worker_generate_draft(state, mode, ...)
        │    ├─ mock: _mock_generate() → 템플릿 마크다운
-       │    └─ pydantic-ai: agent.run_sync(prompt[, deps=rag])
+       │    └─ pydantic-ai: agent.run_sync(prompt, deps=rag)
        │
        └─ [CRITIQUING] critic_evaluate(draft, eval_criteria)
             ├─ eval_criteria 있으면 동적 기준 / 없으면 REQUIRED_KEYWORDS

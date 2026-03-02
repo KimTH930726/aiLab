@@ -23,7 +23,7 @@ _TOPIC_ALIASES: dict[str, list[str]] = {
     "dalle":    ["OpenAI DALL-E image generation", "multimodal AI", "image model"],
     "whisper":  ["OpenAI Whisper speech recognition", "audio AI model", "voice processing"],
     "chatgpt":  ["ChatGPT enterprise", "ChatGPT API", "ChatGPT features"],
-    "bitnet":   ["BitNet 1-bit LLM", "local AI model CPU", "efficient language model"],
+    "exaone":   ["EXAONE 3.5 Korean LLM", "LG AI Research language model", "efficient Korean model"],
     "o1":       ["OpenAI o1 reasoning", "chain of thought model", "AI reasoning benchmark"],
 }
 

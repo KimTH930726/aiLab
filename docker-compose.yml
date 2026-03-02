@@ -7,13 +7,12 @@ services:
       # LanceDB 데이터 영속화
       - lancedb_data:/tmp/lancedb_self_correction_agent
     environment:
-      # 비워두면 mock 모드 (기본값)
-      # BitNet 사용 시: AGENT_MODEL=openai:bitnet docker compose up
-      - AGENT_MODEL=${AGENT_MODEL:-}
-      # BitNet 로컬 서버 (Pydantic AI는 키가 필요하나 로컬은 dummy 허용)
+      - AGENT_MODEL=${AGENT_MODEL:-ollama:exaone3.5:7.8b}
+      # Ollama pydantic-ai 프로바이더
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+      # Ollama OpenAI 호환 API (Pydantic AI는 키가 필요하나 로컬은 dummy 허용)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-dummy-key-for-local}
-      # bitnet.cpp가 호스트 8080 포트에서 실행 중일 때 사용
-      - OPENAI_BASE_URL=http://host.docker.internal:8080/v1
+      - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
     extra_hosts:
       # Linux에서 host.docker.internal 사용을 위해 필요 (Mac은 자동)
       - "host.docker.internal:host-gateway"

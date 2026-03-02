@@ -1,7 +1,7 @@
 """
 Self-Correction Agent: Local-First AI Architecture.
 
-Stack  : LanceDB (RAG) + Pydantic AI (Agent) + BitNet b1.58 (Sim)
+Stack  : LanceDB (RAG) + sentence-transformers + BM25 + Pydantic AI (Agent) + Ollama
 Pattern: Planner -> Worker -> Critic -> Self-Healing Loop
 """
 from .orchestrator import run_agent

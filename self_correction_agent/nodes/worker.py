@@ -22,7 +22,7 @@ def worker_generate_draft(
     """
     Worker 노드 진입점.
 
-    mode="mock"       : 템플릿 기반 (BitNet 시뮬레이션, LLM 불필요)
+    mode="mock"       : 템플릿 기반 (LLM 불필요)
     mode="pydantic-ai": Pydantic AI Agent가 LanceDB Tool로 자율 작성
     """
     if pydantic_agent is not None:
@@ -31,7 +31,7 @@ def worker_generate_draft(
             # tools 지원 모델: Agent가 직접 LanceDB 검색 수행
             result = pydantic_agent.run_sync(prompt, deps=rag)
         else:
-            # tools 미지원 모델(BitNet 등): 검색 결과를 프롬프트에 임베드
+            # tools 미지원 모델: 검색 결과를 프롬프트에 임베드
             result = pydantic_agent.run_sync(prompt)
         # pydantic-ai 버전별 반환 속성 호환 (>=0.1.0: output, 구버전: data)
         return result.output if hasattr(result, "output") else result.data
@@ -76,9 +76,7 @@ def _build_worker_prompt(state: AgentState) -> str:
 
 def _mock_generate(state: AgentState) -> str:
     """
-    템플릿 기반 초안 생성 (로컬 BitNet 출력 시뮬레이션).
-
-    LLM 호출 없이 CPU 문자열 연산만으로 동작.
+    템플릿 기반 초안 생성. LLM 호출 없이 CPU 문자열 연산만으로 동작.
     """
     topics: dict[str, list[dict]] = {}
     for r in state.search_results:

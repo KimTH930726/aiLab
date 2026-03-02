@@ -1,8 +1,8 @@
 """
 LLM 보조 기능: 쿼리 확장 및 동적 Critic 기준 생성.
 
-- tool-capable 모델 (GPT 등): result_type=BaseModel로 구조화된 JSON 출력
-- no-tool 모델 (BitNet 등): 줄바꿈 텍스트 출력 후 직접 파싱
+- tool-capable 모델 (Ollama EXAONE, GPT 등): result_type=BaseModel로 구조화된 JSON 출력
+- no-tool 모델 (tools 미지원): 줄바꿈 텍스트 출력 후 직접 파싱 (fallback)
 LLM 호출 실패 시 빈 값을 반환하여 caller가 fallback 처리할 수 있도록 한다.
 """
 from __future__ import annotations
@@ -17,12 +17,13 @@ try:
 except ImportError:
     _PYDANTIC_AI_AVAILABLE = False
 
-# agent.py와 동일한 기준 — Function Calling 미지원 모델
-_LOCAL_NO_TOOL_MODELS = {"bitnet", "local"}
+# Function Calling 미지원 모델 (부분 문자열 매칭)
+_LOCAL_NO_TOOL_MODELS: set[str] = {"exaone"}
 
 
 def _is_no_tool(model_name: str) -> bool:
-    return model_name.split(":")[-1].lower() in _LOCAL_NO_TOOL_MODELS
+    lower = model_name.lower()
+    return any(m in lower for m in _LOCAL_NO_TOOL_MODELS)
 
 
 def _parse_lines(text: str, max_items: int) -> list[str]:
@@ -60,7 +61,7 @@ def expand_query_with_llm(query: str, model_name: str) -> list[str]:
 
     try:
         if _is_no_tool(model_name):
-            # BitNet 등 tool calling 미지원 → 줄바꿈 텍스트 파싱
+            # tool calling 미지원 모델 → 줄바꿈 텍스트 파싱
             agent: Agent = Agent(
                 model_name,
                 system_prompt=(
@@ -115,7 +116,7 @@ def generate_eval_criteria(query: str, model_name: str) -> list[str]:
 
     try:
         if _is_no_tool(model_name):
-            # BitNet 등 tool calling 미지원 → 줄바꿈 텍스트 파싱
+            # tool calling 미지원 모델 → 줄바꿈 텍스트 파싱
             agent: Agent = Agent(
                 model_name,
                 system_prompt=(
